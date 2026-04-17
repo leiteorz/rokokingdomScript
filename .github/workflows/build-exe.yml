@@ -19,7 +19,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # Specify your Python version here
+        python-version: '3.11' # Changed from 3.10 to 3.11 to support numpy>=2.3.0
 
     - name: Install dependencies
       run: |
