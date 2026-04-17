@@ -6,6 +6,7 @@ import pyautogui
 import random
 import cv2
 import numpy as np
+
 # Attempt to import mss as an alternative to pyscreeze
 try:
     import mss
@@ -14,6 +15,7 @@ except ImportError:
     HAS_MSS = False
 
 from focussing_energy_recognize import find_pattern
+from text_recognize import find_text_coordinates
 
 class SelectRecognizeApp:
     def __init__(self):
@@ -127,10 +129,10 @@ class SelectRecognizeApp:
         
         # Expand the border slightly outwards so it is NOT captured inside the screenshot 
         bx1, by1 = x1 - 2, y1 - 2
-        bwidth = (x2 - x1) + 4
-        bheight = (y2 - y1) + 4
+        border_width = (x2 - x1) + 4
+        border_height = (y2 - y1) + 4
         
-        self.border_win.geometry(f"{bwidth}x{bheight}+{bx1}+{by1}")
+        self.border_win.geometry(f"{border_width}x{border_height}+{bx1}+{by1}")
         self.border_win.overrideredirect(True)
         self.border_win.attributes("-topmost", True)
         
@@ -142,7 +144,7 @@ class SelectRecognizeApp:
         canvas.pack(fill="both", expand=True)
         
         # Draw the red border outline
-        canvas.create_rectangle(0, 0, bwidth-1, bheight-1, outline="red", width=2)
+        canvas.create_rectangle(0, 0, border_width-1, border_height-1, outline="red", width=2)
 
         # Add close button in the top-left corner
         self.close_btn = tk.Button(self.border_win, text="关闭", command=self.root.quit, font=("Arial", 9), bg="#ff4d4d", fg="white", relief="flat")
@@ -197,12 +199,32 @@ class SelectRecognizeApp:
         self.is_enabled = False
         print("Recognition Disabled")
 
-    def get_screenshot_mss(self, x1, y1, x2, y2):
-        with mss.mss() as sct:
+    @staticmethod
+    def get_screenshot_mss(x1, y1, x2, y2):
+        # We know mss is imported here if HAS_MSS is True
+        import mss as mss_lib
+        with mss_lib.mss() as sct:
             monitor = {"top": y1, "left": x1, "width": x2 - x1, "height": y2 - y1}
             img = sct.grab(monitor)
             # Convert to numpy array in BGR format
             return np.array(img)[:, :, :3]
+
+    def perform_click(self, x1, y1, match_rect, label):
+        match_left, match_top, match_right, match_bottom = match_rect
+                        
+        # Translate the matched coordinates relative to the full screen
+        abs_left = x1 + match_left
+        abs_top = y1 + match_top
+        abs_right = x1 + match_right
+        abs_bottom = y1 + match_bottom
+        
+        # Randomize a click coordinate inside the bounding box
+        click_x = random.randint(abs_left, abs_right)
+        click_y = random.randint(abs_top, abs_bottom)
+        
+        # Execute the mouse click
+        pyautogui.click(x=click_x, y=click_y)
+        print(f"{label} found! Clicked inside rect at ({click_x}, {click_y})")
 
     def recognition_loop(self):
         while True:
@@ -215,29 +237,20 @@ class SelectRecognizeApp:
                         frame = self.get_screenshot_mss(x1, y1, x2, y2)
                     else:
                         # Fallback to pyautogui if mss is not installed. 
-                        # Note: This might throw the pyscreeze error again.
                         screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
                         frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
                     
-                    # Search for the target pattern in the cropped frame
-                    match_rect = find_pattern(frame)
+                    # 1. Search for the target pattern
+                    pattern_rect = find_pattern(frame)
+                    if pattern_rect:
+                        self.perform_click(x1, y1, pattern_rect, "Pattern")
                     
-                    if match_rect:
-                        match_left, match_top, match_right, match_bottom = match_rect
-                        
-                        # Translate the matched coordinates relative to the full screen
-                        abs_left = x1 + match_left
-                        abs_top = y1 + match_top
-                        abs_right = x1 + match_right
-                        abs_bottom = y1 + match_bottom
-                        
-                        # Randomize a click coordinate inside the bounding box
-                        click_x = random.randint(abs_left, abs_right)
-                        click_y = random.randint(abs_top, abs_bottom)
-                        
-                        # Execute the mouse click
-                        pyautogui.click(x=click_x, y=click_y)
-                        print(f"Pattern found! Clicked inside rect at ({click_x}, {click_y})")
+                    # 2. Search for the text "带带你"
+                    # Pass lang='chi_sim' specifically as "带带你" is Chinese.
+                    text_rect = find_text_coordinates(frame, "带带你", lang='chi_sim')
+                    if text_rect:
+                        self.perform_click(x1, y1, text_rect, "Text '带带你'")
+
                 except Exception as e:
                     print(f"Error during recognition: {e}")
             

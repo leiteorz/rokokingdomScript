@@ -1,0 +1,60 @@
+name: Build EXE
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*' # Trigger on version tags (e.g., v1.0.0)
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10' # Specify your Python version here
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --add-data "assets;assets" select_recognize_window.py
+      # Explanation of flags:
+      # --onefile: Create a single executable file.
+      # --windowed: Run without a console window (GUI app).
+      # --add-data: Include the 'assets' folder in the build. Format is "source;destination".
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rokokingdomScript-exe
+        path: dist/select_recognize_window.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') # Only run on tag pushes
+
+    steps:
+    - name: Download Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: rokokingdomScript-exe
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: select_recognize_window.exe
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

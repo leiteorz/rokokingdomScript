@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 
 # The pattern image to be recognized
 PATTERN_PATH = 'assets/patterns/focusing_energy.png'
