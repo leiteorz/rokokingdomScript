@@ -6,6 +6,30 @@ import pyautogui
 import random
 import cv2
 import numpy as np
+import ctypes
+import logging
+import sys
+
+# Setup logging without file handler
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# Fix Windows DPI scaling issues so tkinter coordinates match actual screen pixels
+try:
+    # Windows 8.1+
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception as e:
+    logging.debug(f"SetProcessDpiAwareness failed: {e}")
+    try:
+        # Windows Vista+
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception as e2:
+        logging.debug(f"SetProcessDPIAware failed: {e2}")
 
 # Attempt to import mss as an alternative to pyscreeze
 try:
@@ -13,6 +37,7 @@ try:
     HAS_MSS = True
 except ImportError:
     HAS_MSS = False
+    logging.warning("mss module not found. Falling back to pyautogui screenshot.")
 
 from focussing_energy_recognize import find_pattern
 from text_recognize import find_text_coordinates
@@ -21,6 +46,10 @@ class SelectRecognizeApp:
     def __init__(self):
         self.region = None
         self.is_enabled = False
+        
+        # Caches to restrict the search region after first detection
+        self.cached_pattern_rect = None
+        # We are intentionally removing the text cache per user request
         
         self.root = tk.Tk()
         self.root.withdraw() # Hide the main root window
@@ -46,6 +75,7 @@ class SelectRecognizeApp:
         # Schedule first selection to allow the mainloop to start properly
         self.root.after(100, lambda: self.do_reselect())
         
+        logging.info("Application started.")
         self.root.mainloop()
 
     def do_reselect(self):
@@ -58,7 +88,10 @@ class SelectRecognizeApp:
             self.border_win = None
             
         self.region = None
-        print("Please drag to select the recognition area. Press ESC to cancel.")
+        # Clear caches upon reselecting the screen area
+        self.cached_pattern_rect = None
+        
+        logging.info("Please drag to select the recognition area. Press ESC to cancel.")
         self.select_region()
 
     def select_region(self):
@@ -107,20 +140,23 @@ class SelectRecognizeApp:
         canvas.bind("<ButtonRelease-1>", on_release)
 
         def on_escape(event):
+            # The event argument is provided by tkinter but we don't need its value
+            _ = event
             sel_win.destroy()
             if not self.region:
+                logging.info("Selection cancelled, exiting.")
                 self.root.quit()
 
         sel_win.bind("<Escape>", on_escape)
 
     def on_region_selected(self):
         if self.region:
-            print(f"Region selected: {self.region}")
+            logging.info(f"Region selected: {self.region}")
             self.setup_border()
             self.setup_overlay()
-            print("Press F10 to Start, F11 to Stop.")
+            logging.info("Press F10 to Start, F11 to Stop.")
         else:
-            print("Selection cancelled.")
+            logging.info("Selection cancelled.")
             self.root.quit()
 
     def setup_border(self):
@@ -193,11 +229,11 @@ class SelectRecognizeApp:
     def enable(self):
         if self.region:
             self.is_enabled = True
-            print("Recognition Enabled")
+            logging.info("Recognition Enabled")
 
     def disable(self):
         self.is_enabled = False
-        print("Recognition Disabled")
+        logging.info("Recognition Disabled")
 
     @staticmethod
     def get_screenshot_mss(x1, y1, x2, y2):
@@ -209,7 +245,8 @@ class SelectRecognizeApp:
             # Convert to numpy array in BGR format
             return np.array(img)[:, :, :3]
 
-    def perform_click(self, x1, y1, match_rect, label):
+    @staticmethod
+    def perform_click(x1, y1, match_rect, label):
         match_left, match_top, match_right, match_bottom = match_rect
                         
         # Translate the matched coordinates relative to the full screen
@@ -224,7 +261,53 @@ class SelectRecognizeApp:
         
         # Execute the mouse click
         pyautogui.click(x=click_x, y=click_y)
-        print(f"{label} found! Clicked inside rect at ({click_x}, {click_y})")
+        logging.info(f"{label} found! Clicked inside rect at ({click_x}, {click_y})")
+
+    def _run_cached_recognition(self, x1, y1, x2, y2, cached_rect, search_func, label, padding=50):
+        """
+        Helper method to grab a smaller screen region using the cached bounding box,
+        padding it slightly to account for minor movements, and perform recognition.
+        If it fails, it returns False so the caller can fall back to a full-region search.
+        """
+        c_left, c_top, c_right, c_bottom = cached_rect
+        
+        # Create a bounding box around the previous match with some padding
+        # Constrain it to the boundaries of the original selected region
+        search_x1 = max(0, c_left - padding)
+        search_y1 = max(0, c_top - padding)
+        search_x2 = min(x2 - x1, c_right + padding)
+        search_y2 = min(y2 - y1, c_bottom + padding)
+        
+        abs_search_x1 = x1 + search_x1
+        abs_search_y1 = y1 + search_y1
+        abs_search_x2 = x1 + search_x2
+        abs_search_y2 = y1 + search_y2
+        
+        if HAS_MSS:
+            frame = self.get_screenshot_mss(abs_search_x1, abs_search_y1, abs_search_x2, abs_search_y2)
+        else:
+            screenshot = pyautogui.screenshot(region=(abs_search_x1, abs_search_y1, abs_search_x2 - abs_search_x1, abs_search_y2 - abs_search_y1))
+            frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+
+        # Run the specific search function
+        match_rect = search_func(frame)
+        
+        if match_rect:
+            # The coordinates returned are relative to the padded search box.
+            # We must convert them back to be relative to the original full region (x1, y1)
+            # so `perform_click` and the cache can work seamlessly.
+            m_left, m_top, m_right, m_bottom = match_rect
+            
+            rel_to_region_left = search_x1 + m_left
+            rel_to_region_top = search_y1 + m_top
+            rel_to_region_right = search_x1 + m_right
+            rel_to_region_bottom = search_y1 + m_bottom
+            
+            adjusted_rect = (rel_to_region_left, rel_to_region_top, rel_to_region_right, rel_to_region_bottom)
+            self.perform_click(x1, y1, adjusted_rect, label)
+            return adjusted_rect
+            
+        return None
 
     def recognition_loop(self):
         while True:
@@ -232,27 +315,54 @@ class SelectRecognizeApp:
                 x1, y1, x2, y2 = self.region
                 width = x2 - x1
                 height = y2 - y1
+                
+                full_frame = None
+                
                 try:
-                    if HAS_MSS:
-                        frame = self.get_screenshot_mss(x1, y1, x2, y2)
-                    else:
-                        # Fallback to pyautogui if mss is not installed. 
-                        screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
-                        frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-                    
                     # 1. Search for the target pattern
-                    pattern_rect = find_pattern(frame)
-                    if pattern_rect:
-                        self.perform_click(x1, y1, pattern_rect, "Pattern")
-                    
+                    pattern_found_in_cache = False
+                    if self.cached_pattern_rect:
+                        # Try searching in the cached sub-region first
+                        new_rect = self._run_cached_recognition(
+                            x1, y1, x2, y2, self.cached_pattern_rect, 
+                            lambda f: find_pattern(f), "Pattern (Cached)"
+                        )
+                        if new_rect:
+                            self.cached_pattern_rect = new_rect
+                            pattern_found_in_cache = True
+                        else:
+                            # If it moved outside the padded box or disappeared, invalidate the cache
+                            logging.info("Pattern cache invalidated.")
+                            self.cached_pattern_rect = None
+
+                    if not pattern_found_in_cache:
+                        # Fallback to full region search
+                        if HAS_MSS:
+                            full_frame = self.get_screenshot_mss(x1, y1, x2, y2)
+                        else:
+                            screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
+                            full_frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                            
+                        pattern_rect = find_pattern(full_frame)
+                        if pattern_rect:
+                            self.perform_click(x1, y1, pattern_rect, "Pattern")
+                            self.cached_pattern_rect = pattern_rect
+
                     # 2. Search for the text "带带你"
-                    # Pass lang='chi_sim' specifically as "带带你" is Chinese.
-                    text_rect = find_text_coordinates(frame, "带带你", lang='chi_sim')
+                    # Cache optimization is intentionally disabled for this per user request
+                    if full_frame is None:
+                         if HAS_MSS:
+                             full_frame = self.get_screenshot_mss(x1, y1, x2, y2)
+                         else:
+                             screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
+                             full_frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                             
+                    text_rect = find_text_coordinates(full_frame, "带带你", lang='ch_sim')
                     if text_rect:
                         self.perform_click(x1, y1, text_rect, "Text '带带你'")
 
-                except Exception as e:
-                    print(f"Error during recognition: {e}")
+                except Exception as err:
+                    logging.error(f"Error during recognition: {err}", exc_info=True)
             
             # Wait for 1 second before capturing the next frame
             time.sleep(1)

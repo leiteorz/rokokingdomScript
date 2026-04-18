@@ -28,11 +28,12 @@ jobs:
 
     - name: Build executable
       run: |
-        pyinstaller --onefile --windowed --add-data "assets;assets" select_recognize_window.py
+        pyinstaller --onefile --windowed --add-data "assets;assets" --collect-all easyocr select_recognize_window.py
       # Explanation of flags:
       # --onefile: Create a single executable file.
       # --windowed: Run without a console window (GUI app).
       # --add-data: Include the 'assets' folder in the build. Format is "source;destination".
+      # --collect-all easyocr: Tell pyinstaller to grab all necessary hidden easyocr files.
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
