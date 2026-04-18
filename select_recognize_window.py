@@ -65,9 +65,12 @@ class SelectRecognizeApp:
         keyboard.add_hotkey('f10', self.enable)
         keyboard.add_hotkey('f11', self.disable)
         
-        # Start background thread for the recognition loop
-        self.recognize_thread = threading.Thread(target=self.recognition_loop, daemon=True)
-        self.recognize_thread.start()
+        # Start background threads for the recognition loops
+        self.pattern_thread = threading.Thread(target=self.pattern_recognition_loop, daemon=True)
+        self.pattern_thread.start()
+        
+        self.text_thread = threading.Thread(target=self.text_recognition_loop, daemon=True)
+        self.text_thread.start()
         
         # Start status update loop
         self.update_status_loop()
@@ -309,14 +312,12 @@ class SelectRecognizeApp:
             
         return None
 
-    def recognition_loop(self):
+    def pattern_recognition_loop(self):
         while True:
             if self.is_enabled and self.region:
                 x1, y1, x2, y2 = self.region
                 width = x2 - x1
                 height = y2 - y1
-                
-                full_frame = None
                 
                 try:
                     # 1. Search for the target pattern
@@ -348,21 +349,45 @@ class SelectRecognizeApp:
                             self.perform_click(x1, y1, pattern_rect, "Pattern")
                             self.cached_pattern_rect = pattern_rect
 
+                except Exception as err:
+                    logging.error(f"Error during pattern recognition: {err}", exc_info=True)
+            
+            # Wait for 1 second before capturing the next frame
+            time.sleep(1)
+
+    def text_recognition_loop(self):
+        while True:
+            if self.is_enabled and self.region:
+                x1, y1, x2, y2 = self.region
+                width = x2 - x1
+                height = y2 - y1
+                
+                try:
                     # 2. Search for the text "带带你"
-                    # Cache optimization is intentionally disabled for this per user request
-                    if full_frame is None:
-                         if HAS_MSS:
-                             full_frame = self.get_screenshot_mss(x1, y1, x2, y2)
-                         else:
-                             screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
-                             full_frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-                             
-                    text_rect = find_text_coordinates(full_frame, "带带你", lang='ch_sim')
+                    # We only process the central third of the image to optimize performance
+                    third_width = width // 3
+                    
+                    # Instead of grabbing the full frame, we can grab only the central third
+                    # Calculate central third coordinates
+                    cx1 = x1 + third_width
+                    cx2 = x1 + 2 * third_width
+                    c_width = cx2 - cx1
+                    
+                    if HAS_MSS:
+                        central_frame = self.get_screenshot_mss(cx1, y1, cx2, y2)
+                    else:
+                        screenshot = pyautogui.screenshot(region=(cx1, y1, c_width, height))
+                        central_frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                        
+                    text_rect = find_text_coordinates(central_frame, "带带你", lang='ch_sim')
                     if text_rect:
-                        self.perform_click(x1, y1, text_rect, "Text '带带你'")
+                        # text_rect will be relative to central_frame. We need to shift it horizontally
+                        left, top, right, bottom = text_rect
+                        adjusted_rect = (left + third_width, top, right + third_width, bottom)
+                        self.perform_click(x1, y1, adjusted_rect, "Text '带带你'")
 
                 except Exception as err:
-                    logging.error(f"Error during recognition: {err}", exc_info=True)
+                    logging.error(f"Error during text recognition: {err}", exc_info=True)
             
             # Wait for 1 second before capturing the next frame
             time.sleep(1)
