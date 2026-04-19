@@ -3,13 +3,19 @@ import cv2
 try:
     import easyocr
     HAS_EASYOCR = True
-    # Initialize the reader once globally so it doesn't reload the model on every loop iteration
-    # Initialize with both Chinese Simplified and English
-    reader = easyocr.Reader(['ch_sim', 'en'])
+    # Do not initialize the reader globally here to avoid slow startup
+    reader = None
 except ImportError:
     easyocr = None
     HAS_EASYOCR = False
     reader = None
+
+def get_reader():
+    global reader
+    if HAS_EASYOCR and reader is None:
+        # Initialize with both Chinese Simplified and English
+        reader = easyocr.Reader(['ch_sim', 'en'])
+    return reader
 
 def find_text_coordinates(frame, target_text, lang='ch_sim', threshold=0.6):
     """
@@ -25,9 +31,13 @@ def find_text_coordinates(frame, target_text, lang='ch_sim', threshold=0.6):
     # Use lang parameter somehow or suppress warning if we just want backwards compatibility
     _ = lang
     
-    if not HAS_EASYOCR or reader is None:
+    if not HAS_EASYOCR:
         print("Error: easyocr is not installed. Please run 'pip install easyocr'.")
         return None
+
+    ocr_reader = get_reader()
+    if ocr_reader is None:
+         return None
 
     # EasyOCR expects RGB or grayscale. OpenCV uses BGR.
     # Convert BGR to RGB
@@ -35,7 +45,7 @@ def find_text_coordinates(frame, target_text, lang='ch_sim', threshold=0.6):
 
     # Use EasyOCR to read the text from the image
     # detail=1 returns bounding boxes, text, and confidence
-    results = getattr(reader, 'readtext')(frame_rgb)
+    results = getattr(ocr_reader, 'readtext')(frame_rgb)
 
     target_text_lower = target_text.lower()
 

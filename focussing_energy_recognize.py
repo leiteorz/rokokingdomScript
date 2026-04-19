@@ -16,13 +16,17 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# The pattern image to be recognized
+# Delay loading the pattern until it's actually needed
 PATTERN_PATH = resource_path('assets/patterns/focusing_energy.png')
+PATTERN_GRAY = None
 
-# Load pattern in grayscale
-PATTERN_GRAY = cv2.imread(PATTERN_PATH, 0)
-if PATTERN_GRAY is None:
-    logger.warning(f"Could not load pattern image from {PATTERN_PATH}")
+def get_pattern():
+    global PATTERN_GRAY
+    if PATTERN_GRAY is None:
+        PATTERN_GRAY = cv2.imread(PATTERN_PATH, 0)
+        if PATTERN_GRAY is None:
+            logger.warning(f"Could not load pattern image from {PATTERN_PATH}")
+    return PATTERN_GRAY
 
 def find_pattern(frame, threshold=0.7, scales=np.linspace(0.4, 2.0, 30)[::-1]):
     """
@@ -33,14 +37,15 @@ def find_pattern(frame, threshold=0.7, scales=np.linspace(0.4, 2.0, 30)[::-1]):
     :param scales: A range of scales to test. 30 steps between 0.4x and 2.0x.
     :return: A tuple (left, top, right, bottom) of the bounding box of the pattern if found, otherwise None.
     """
-    if PATTERN_GRAY is None:
+    pattern = get_pattern()
+    if pattern is None:
         logger.error(f"Pattern image not found at {PATTERN_PATH}")
         return None
 
     # Convert frame to grayscale
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    pattern_h, pattern_w = PATTERN_GRAY.shape[:2]
+    pattern_h, pattern_w = pattern.shape[:2]
     
     best_match = None
     best_val = -1
@@ -57,7 +62,7 @@ def find_pattern(frame, threshold=0.7, scales=np.linspace(0.4, 2.0, 30)[::-1]):
         if width > frame_gray.shape[1] or height > frame_gray.shape[0] or width < 10 or height < 10:
             continue
 
-        resized_pattern = cv2.resize(PATTERN_GRAY, (width, height))
+        resized_pattern = cv2.resize(pattern, (width, height))
 
         # Perform template matching using TM_CCOEFF_NORMED on pure grayscale
         # TM_CCOEFF_NORMED is highly robust to lighting changes as long as the texture matches
