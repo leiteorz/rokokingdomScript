@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 import time
 import threading
 import keyboard
@@ -9,6 +10,7 @@ import numpy as np
 import ctypes
 import logging
 import sys
+import queue
 
 # Setup logging without file handler
 logging.basicConfig(
@@ -39,13 +41,16 @@ except ImportError:
     HAS_MSS = False
     logging.warning("mss module not found. Falling back to pyautogui screenshot.")
 
-from focussing_energy_recognize import find_pattern
-from text_recognize import find_text_coordinates
+# Move expensive imports into functions so they don't block the UI
+# from focussing_energy_recognize import find_pattern
+# from text_recognize import find_text_coordinates
 
 class SelectRecognizeApp:
     def __init__(self):
         self.region = None
         self.is_enabled = False
+        self.is_loading = True
+        self.modules_loaded = False
         
         # Caches to restrict the search region after first detection
         self.cached_pattern_rect = None
@@ -60,10 +65,17 @@ class SelectRecognizeApp:
         self.reselect_btn = None
         self.close_btn = None
         self.overlay_frame = None
+        self.loading_label = None
+        
+        # We will use this to communicate when loading is done
+        self.loading_queue = queue.Queue()
         
         # Hotkeys for toggling recognition
         keyboard.add_hotkey('f10', self.enable)
         keyboard.add_hotkey('f11', self.disable)
+        
+        # Start a thread to load heavy modules in the background
+        threading.Thread(target=self.load_modules_background, daemon=True).start()
         
         # Start background threads for the recognition loops
         self.pattern_thread = threading.Thread(target=self.pattern_recognition_loop, daemon=True)
@@ -75,13 +87,83 @@ class SelectRecognizeApp:
         # Start status update loop
         self.update_status_loop()
         
-        # Schedule first selection to allow the mainloop to start properly
-        self.root.after(100, lambda: self.do_reselect())
+        # Show loading screen before doing anything else
+        self.show_loading_screen()
         
-        logging.info("Application started.")
+        logging.info("Application started. Waiting for modules to load...")
         self.root.mainloop()
 
+    def load_modules_background(self):
+        """Loads heavy OCR and CV models in the background"""
+        try:
+            logging.info("Starting background loading of AI models...")
+            
+            # 1. Import the modules
+            global find_pattern, find_text_coordinates, get_reader, get_pattern
+            from focussing_energy_recognize import find_pattern, get_pattern
+            from text_recognize import find_text_coordinates, get_reader
+            
+            # 2. Force initialization of the OCR and Image caches
+            get_pattern()
+            get_reader()
+            
+            logging.info("AI models loaded successfully!")
+            self.modules_loaded = True
+            self.loading_queue.put("DONE")
+            
+        except Exception as e:
+            logging.error(f"Failed to load modules: {e}")
+            self.loading_queue.put("ERROR")
+
+    def show_loading_screen(self):
+        self.loading_win = tk.Toplevel(self.root)
+        self.loading_win.title("Loading Rokokingdom Script...")
+        
+        # Center the window
+        window_width = 300
+        window_height = 100
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        center_x = int(screen_width/2 - window_width / 2)
+        center_y = int(screen_height/2 - window_height / 2)
+        
+        self.loading_win.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
+        self.loading_win.overrideredirect(True) # Remove border
+        self.loading_win.attributes("-topmost", True)
+        
+        frame = tk.Frame(self.loading_win, bg="white", highlightbackground="black", highlightthickness=1)
+        frame.pack(fill="both", expand=True)
+        
+        tk.Label(frame, text="Initializing AI Models...", font=("Arial", 12, "bold"), bg="white").pack(pady=(20, 10))
+        
+        # Progress bar animation
+        self.progress = ttk.Progressbar(frame, mode='indeterminate', length=200)
+        self.progress.pack(pady=5)
+        self.progress.start(10)
+        
+        # Check loading status periodically
+        self.check_loading_status()
+
+    def check_loading_status(self):
+        try:
+            msg = self.loading_queue.get_nowait()
+            if msg == "DONE":
+                self.progress.stop()
+                self.loading_win.destroy()
+                self.is_loading = False
+                # Proceed to area selection
+                self.do_reselect()
+            else:
+                # Handle error case
+                tk.Label(self.loading_win, text="Failed to load models. Check console.", fg="red").pack()
+        except queue.Empty:
+            # Not done yet, check again in 100ms
+            self.root.after(100, self.check_loading_status)
+
     def do_reselect(self):
+        if self.is_loading:
+            return
+            
         self.is_enabled = False
         if self.overlay_win:
             self.overlay_win.destroy()
@@ -230,7 +312,7 @@ class SelectRecognizeApp:
         self.root.after(200, lambda: self.update_status_loop())
 
     def enable(self):
-        if self.region:
+        if self.region and self.modules_loaded:
             self.is_enabled = True
             logging.info("Recognition Enabled")
 
@@ -314,7 +396,7 @@ class SelectRecognizeApp:
 
     def pattern_recognition_loop(self):
         while True:
-            if self.is_enabled and self.region:
+            if self.is_enabled and self.region and self.modules_loaded:
                 x1, y1, x2, y2 = self.region
                 width = x2 - x1
                 height = y2 - y1
@@ -357,7 +439,7 @@ class SelectRecognizeApp:
 
     def text_recognition_loop(self):
         while True:
-            if self.is_enabled and self.region:
+            if self.is_enabled and self.region and self.modules_loaded:
                 x1, y1, x2, y2 = self.region
                 width = x2 - x1
                 height = y2 - y1
