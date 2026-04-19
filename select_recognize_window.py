@@ -54,7 +54,18 @@ class SelectRecognizeApp:
         
         # Initialize Tkinter immediately to show UI fast
         self.root = tk.Tk()
-        self.root.withdraw() # Hide the main root window
+        self.root.title("RokoKingdom Script") # Added title
+        
+        # Ensure the root window itself is not completely unmanaged
+        # In tkinter, `withdraw()` hides the window from the taskbar too.
+        # Instead of `withdraw()`, we use `iconify()` or hide it by moving it off-screen,
+        # but to keep it in the taskbar, the main window needs to exist.
+        
+        # Let's create a minimal visible main window that holds the taskbar icon
+        self.root.geometry("250x150")
+        self.root.minsize(250, 150)
+        # Position it somewhere unobtrusive or just let it be a control panel
+        tk.Label(self.root, text="RokoKingdom Script\n\nF10 to Start\nF11 to Stop", font=("Arial", 10)).pack(expand=True, fill="both")
         
         self.overlay_win = None
         self.border_win = None
