@@ -12,6 +12,12 @@ import logging
 import sys
 import queue
 
+# Move heavy imports away from the top level
+# These can significantly slow down PyInstaller executables
+# import mss
+# from focussing_energy_recognize import find_pattern, get_pattern
+# from text_recognize import find_text_coordinates, get_reader
+
 # Setup logging without file handler
 logging.basicConfig(
     level=logging.INFO,
@@ -33,18 +39,6 @@ except Exception as e:
     except Exception as e2:
         logging.debug(f"SetProcessDPIAware failed: {e2}")
 
-# Attempt to import mss as an alternative to pyscreeze
-try:
-    import mss
-    HAS_MSS = True
-except ImportError:
-    HAS_MSS = False
-    logging.warning("mss module not found. Falling back to pyautogui screenshot.")
-
-# Move expensive imports into functions so they don't block the UI
-# from focussing_energy_recognize import find_pattern
-# from text_recognize import find_text_coordinates
-
 class SelectRecognizeApp:
     def __init__(self):
         self.region = None
@@ -52,10 +46,13 @@ class SelectRecognizeApp:
         self.is_loading = True
         self.modules_loaded = False
         
+        self.has_mss = False
+        
         # Caches to restrict the search region after first detection
         self.cached_pattern_rect = None
         # We are intentionally removing the text cache per user request
         
+        # Initialize Tkinter immediately to show UI fast
         self.root = tk.Tk()
         self.root.withdraw() # Hide the main root window
         
@@ -74,6 +71,9 @@ class SelectRecognizeApp:
         keyboard.add_hotkey('f10', self.enable)
         keyboard.add_hotkey('f11', self.disable)
         
+        # Show loading screen FIRST before starting any threads
+        self.show_loading_screen()
+        
         # Start a thread to load heavy modules in the background
         threading.Thread(target=self.load_modules_background, daemon=True).start()
         
@@ -87,9 +87,6 @@ class SelectRecognizeApp:
         # Start status update loop
         self.update_status_loop()
         
-        # Show loading screen before doing anything else
-        self.show_loading_screen()
-        
         logging.info("Application started. Waiting for modules to load...")
         self.root.mainloop()
 
@@ -98,12 +95,21 @@ class SelectRecognizeApp:
         try:
             logging.info("Starting background loading of AI models...")
             
-            # 1. Import the modules
+            # 1. Import mss
+            try:
+                global mss
+                import mss
+                self.has_mss = True
+            except ImportError:
+                self.has_mss = False
+                logging.warning("mss module not found. Falling back to pyautogui screenshot.")
+
+            # 2. Import the heavy modules locally here
             global find_pattern, find_text_coordinates, get_reader, get_pattern
             from focussing_energy_recognize import find_pattern, get_pattern
             from text_recognize import find_text_coordinates, get_reader
             
-            # 2. Force initialization of the OCR and Image caches
+            # 3. Force initialization of the OCR and Image caches
             get_pattern()
             get_reader()
             
@@ -112,12 +118,12 @@ class SelectRecognizeApp:
             self.loading_queue.put("DONE")
             
         except Exception as e:
-            logging.error(f"Failed to load modules: {e}")
+            logging.error(f"Failed to load modules: {e}", exc_info=True)
             self.loading_queue.put("ERROR")
 
     def show_loading_screen(self):
         self.loading_win = tk.Toplevel(self.root)
-        self.loading_win.title("Loading Rokokingdom Script...")
+        self.loading_win.title("Loading...")
         
         # Center the window
         window_width = 300
@@ -320,11 +326,9 @@ class SelectRecognizeApp:
         self.is_enabled = False
         logging.info("Recognition Disabled")
 
-    @staticmethod
-    def get_screenshot_mss(x1, y1, x2, y2):
-        # We know mss is imported here if HAS_MSS is True
-        import mss as mss_lib
-        with mss_lib.mss() as sct:
+    def get_screenshot_mss(self, x1, y1, x2, y2):
+        # We know mss is imported here if self.has_mss is True
+        with mss.mss() as sct:
             monitor = {"top": y1, "left": x1, "width": x2 - x1, "height": y2 - y1}
             img = sct.grab(monitor)
             # Convert to numpy array in BGR format
@@ -368,7 +372,7 @@ class SelectRecognizeApp:
         abs_search_x2 = x1 + search_x2
         abs_search_y2 = y1 + search_y2
         
-        if HAS_MSS:
+        if self.has_mss:
             frame = self.get_screenshot_mss(abs_search_x1, abs_search_y1, abs_search_x2, abs_search_y2)
         else:
             screenshot = pyautogui.screenshot(region=(abs_search_x1, abs_search_y1, abs_search_x2 - abs_search_x1, abs_search_y2 - abs_search_y1))
@@ -420,7 +424,7 @@ class SelectRecognizeApp:
 
                     if not pattern_found_in_cache:
                         # Fallback to full region search
-                        if HAS_MSS:
+                        if self.has_mss:
                             full_frame = self.get_screenshot_mss(x1, y1, x2, y2)
                         else:
                             screenshot = pyautogui.screenshot(region=(x1, y1, width, height))
@@ -455,7 +459,7 @@ class SelectRecognizeApp:
                     cx2 = x1 + 2 * third_width
                     c_width = cx2 - cx1
                     
-                    if HAS_MSS:
+                    if self.has_mss:
                         central_frame = self.get_screenshot_mss(cx1, y1, cx2, y2)
                     else:
                         screenshot = pyautogui.screenshot(region=(cx1, y1, c_width, height))
